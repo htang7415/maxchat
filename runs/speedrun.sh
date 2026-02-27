@@ -1,5 +1,4 @@
 #!/bin/bash
-set -Eeuo pipefail
 
 # This script is configured to train your own GPT-2 grade LLM (pretraining + finetuning)
 # It is designed to run on a blank 8XH100 GPU node and takes approximately 3 hours to complete.
@@ -11,154 +10,22 @@ set -Eeuo pipefail
 # 3) Example launch with wandb logging, but see below for setting up wandb first:
 # WANDB_RUN=speedrun screen -L -Logfile runs/speedrun.log -S speedrun bash runs/speedrun.sh
 
-log() { echo "[speedrun] $*"; }
-die() { echo "[speedrun] ERROR: $*" >&2; exit 1; }
-
-require_cmd() {
-    command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
-}
-
-check_writable_dir() {
-    local dir="$1"
-    mkdir -p "$dir"
-    local probe="$dir/.write_test_$$"
-    : > "$probe" || die "Cannot write to $dir (check permissions/quota)"
-    rm -f "$probe"
-}
-
-check_free_space_gb() {
-    local dir="$1"
-    local min_gb="$2"
-    local free_kb
-    free_kb=$(df -Pk "$dir" | awk 'NR==2 {print $4}')
-    local min_kb=$((min_gb * 1024 * 1024))
-    if (( free_kb < min_kb )); then
-        die "Not enough free disk in $dir: $((free_kb / 1024 / 1024))GB available, need at least ${min_gb}GB"
-    fi
-    log "Free disk in $dir: $((free_kb / 1024 / 1024))GB"
-}
-
-check_cuda_gpus() {
-    if ! command -v nvidia-smi >/dev/null 2>&1; then
-        if [[ -z "${SLURM_JOB_ID:-}" ]] && [[ "${ALLOW_NO_NVIDIA_SMI:-0}" != "1" ]]; then
-            die "nvidia-smi not found and no active Slurm allocation detected. Run this on a GPU compute node (via salloc/sbatch) or set ALLOW_NO_NVIDIA_SMI=1 to bypass."
-        fi
-        log "nvidia-smi not found on PATH; skipping system GPU query and relying on PyTorch CUDA check."
-        return 0
-    fi
-    local visible
-    visible=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l | tr -d ' ')
-    if [[ -z "$visible" ]] || (( visible == 0 )); then
-        die "nvidia-smi is present but reports 0 GPUs. Run this on a GPU compute node."
-    fi
-    if (( visible < NPROC_PER_NODE )); then
-        die "Need at least NPROC_PER_NODE=${NPROC_PER_NODE} visible GPUs, found ${visible}. Run this on a GPU compute node."
-    fi
-    log "Detected ${visible} visible GPU(s)"
-}
-
-check_pytorch_cuda() {
-    python - "$NPROC_PER_NODE" <<'PY'
-import sys
-import torch
-need = int(sys.argv[1])
-count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-if count < need:
-    raise SystemExit(
-        f"PyTorch CUDA check failed: need >= {need} GPUs, found {count}. "
-        "Are you on a CPU/login node? Request a GPU compute allocation first."
-    )
-print(f"[speedrun] PyTorch CUDA OK ({count} GPU(s) visible)")
-PY
-}
-
-check_checkpoint_dir() {
-    local ckpt_dir="$1"
-    local stage_name="$2"
-    if [[ ! -d "$ckpt_dir" ]]; then
-        die "${stage_name} checkpoint directory is missing: $ckpt_dir"
-    fi
-    shopt -s nullglob
-    local model_files=("$ckpt_dir"/model_*.pt)
-    shopt -u nullglob
-    if (( ${#model_files[@]} == 0 )); then
-        die "${stage_name} checkpoint directory has no model_*.pt files: $ckpt_dir"
-    fi
-    log "${stage_name} checkpoints verified: $ckpt_dir"
-}
-
-download_with_retry() {
-    local url="$1"
-    local out="$2"
-    curl --fail --location --retry 5 --retry-delay 2 --retry-all-errors --continue-at - --output "$out" "$url"
-}
-
-DATASET_DOWNLOAD_PID=""
-cleanup_background_jobs() {
-    if [[ -n "${DATASET_DOWNLOAD_PID:-}" ]] && kill -0 "$DATASET_DOWNLOAD_PID" 2>/dev/null; then
-        log "Stopping background dataset download (pid ${DATASET_DOWNLOAD_PID})"
-        kill "$DATASET_DOWNLOAD_PID" || true
-        wait "$DATASET_DOWNLOAD_PID" 2>/dev/null || true
-    fi
-}
-trap cleanup_background_jobs EXIT
-
 # Default intermediate artifacts directory is in ~/.cache/nanochat
 export OMP_NUM_THREADS=1
-if [[ -z "${NANOCHAT_BASE_DIR:-}" ]]; then
-    if [[ -n "${SCRATCH:-}" ]] && [[ -d "${SCRATCH}" ]]; then
-        export NANOCHAT_BASE_DIR="$SCRATCH/nanochat"
-    elif [[ -d "/kfs3/scratch/$USER" ]]; then
-        export NANOCHAT_BASE_DIR="/kfs3/scratch/$USER/nanochat"
-    else
-        export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
-    fi
-fi
-if [[ -z "${NPROC_PER_NODE:-}" ]]; then
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        detected_gpus=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l | tr -d ' ')
-        if [[ -n "${detected_gpus}" ]] && (( detected_gpus > 0 )); then
-            NPROC_PER_NODE="${detected_gpus}"
-        else
-            NPROC_PER_NODE=1
-        fi
-    else
-        NPROC_PER_NODE=1
-    fi
-fi
-BASE_MODEL_TAG="${BASE_MODEL_TAG:-d26}"
-NANOCHAT_MIN_FREE_GB="${NANOCHAT_MIN_FREE_GB:-80}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$NANOCHAT_BASE_DIR/uv_cache}"
-export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$NANOCHAT_BASE_DIR/uv_python}"
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$NANOCHAT_BASE_DIR/.venv}"
-
-[[ -f "pyproject.toml" ]] || die "Run this script from the repository root (missing pyproject.toml)"
-check_writable_dir "$NANOCHAT_BASE_DIR"
-check_free_space_gb "$NANOCHAT_BASE_DIR" "$NANOCHAT_MIN_FREE_GB"
-check_writable_dir "$UV_CACHE_DIR"
-check_writable_dir "$UV_PYTHON_INSTALL_DIR"
-check_cuda_gpus
-log "NANOCHAT_BASE_DIR=$NANOCHAT_BASE_DIR"
-log "NPROC_PER_NODE=$NPROC_PER_NODE"
-log "UV_CACHE_DIR=$UV_CACHE_DIR"
-log "UV_PYTHON_INSTALL_DIR=$UV_PYTHON_INSTALL_DIR"
-log "UV_PROJECT_ENVIRONMENT=$UV_PROJECT_ENVIRONMENT"
+export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
+mkdir -p $NANOCHAT_BASE_DIR
 
 # -----------------------------------------------------------------------------
 # Python venv setup with uv
 
 # install uv (if not already installed)
-if ! command -v uv >/dev/null 2>&1; then
-    require_cmd curl
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-fi
+command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 # create a .venv local virtual environment (if it doesn't exist)
-[ -d "$UV_PROJECT_ENVIRONMENT" ] || uv venv "$UV_PROJECT_ENVIRONMENT"
+[ -d ".venv" ] || uv venv
 # install the repo dependencies
 uv sync --extra gpu
 # activate venv so that `python` uses the project's venv instead of system python
-source "$UV_PROJECT_ENVIRONMENT/bin/activate"
-check_pytorch_cuda
+source .venv/bin/activate
 
 # -----------------------------------------------------------------------------
 # wandb setup
@@ -167,7 +34,7 @@ check_pytorch_cuda
 #    `wandb login`
 # 2) Set the WANDB_RUN environment variable when running this script, e.g.:
 #    `WANDB_RUN=d26 bash speedrun.sh`
-if [ -z "${WANDB_RUN:-}" ]; then
+if [ -z "$WANDB_RUN" ]; then
     # by default use "dummy" : it's handled as a special case, skips logging to wandb
     WANDB_RUN=dummy
 fi
@@ -200,30 +67,23 @@ python -m scripts.tok_eval
 # -----------------------------------------------------------------------------
 # Base model (pretraining)
 echo "Waiting for dataset download to complete..."
-wait "$DATASET_DOWNLOAD_PID"
-DATASET_DOWNLOAD_PID=""
+wait $DATASET_DOWNLOAD_PID
 
 # d26 model (slightly undertrained to beat GPT-2 => decrease data:params ratio from compute optimal 10.5 (default) to 8.25)
-torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" -m scripts.base_train -- --depth=26 --model-tag="$BASE_MODEL_TAG" --target-param-data-ratio=8.25 --device-batch-size=16 --fp8 --run="$WANDB_RUN"
-BASE_CKPT_DIR="$NANOCHAT_BASE_DIR/base_checkpoints/$BASE_MODEL_TAG"
-check_checkpoint_dir "$BASE_CKPT_DIR" "Base training"
+torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- --depth=26 --target-param-data-ratio=8.25 --device-batch-size=16 --fp8 --run=$WANDB_RUN
 # evaluate the model: CORE metric, BPB on train/val, and draw samples
-torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" -m scripts.base_eval -- --model-tag="$BASE_MODEL_TAG" --device-batch-size=16
+torchrun --standalone --nproc_per_node=8 -m scripts.base_eval -- --device-batch-size=16
 
 # -----------------------------------------------------------------------------
 # SFT (teach the model conversation special tokens, tool use, multiple choice)
 
 # download 2.3MB of synthetic identity conversations to impart a personality to nanochat
 # see dev/gen_synthetic_data.py for details on how this data was prepared and to get a sense of how you can easily tune it
-check_free_space_gb "$NANOCHAT_BASE_DIR" 1
-download_with_retry "https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl" "$NANOCHAT_BASE_DIR/identity_conversations.jsonl"
-[[ -s "$NANOCHAT_BASE_DIR/identity_conversations.jsonl" ]] || die "identity_conversations.jsonl is missing or empty after download"
+curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # run SFT and eval the model
-torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" -m scripts.chat_sft -- --model-tag="$BASE_MODEL_TAG" --device-batch-size=16 --run="$WANDB_RUN"
-SFT_CKPT_DIR="$NANOCHAT_BASE_DIR/chatsft_checkpoints/$BASE_MODEL_TAG"
-check_checkpoint_dir "$SFT_CKPT_DIR" "Chat SFT"
-torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" -m scripts.chat_eval -- -i sft -g "$BASE_MODEL_TAG"
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-size=16 --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i sft
 
 # chat with the model over CLI! Leave out the -p to chat interactively
 # python -m scripts.chat_cli -p "Why is the sky blue?"
