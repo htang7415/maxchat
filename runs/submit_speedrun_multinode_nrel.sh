@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=nawimem
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --job-name=maxchat
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
@@ -19,6 +19,18 @@
 #     runs/submit_speedrun_multinode_nrel.sh
 
 set -euo pipefail
+
+# This file is a Slurm submit script; running it with plain `bash` skips #SBATCH.
+if [ -z "${SLURM_JOB_ID:-}" ]; then
+    cat <<'EOF'
+ERROR: No active Slurm job detected.
+Run this script with sbatch (recommended) or from an existing salloc allocation.
+
+Example:
+  sbatch --partition=gpu-h100 runs/submit_speedrun_multinode_nrel.sh
+EOF
+    exit 2
+fi
 
 JOB_START_TS=$(date +%s)
 echo "Job Start Time: $(date)"
@@ -40,7 +52,18 @@ mkdir -p logs
 NNODES="${SLURM_NNODES:-2}"
 export NNODES
 export NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
-export MASTER_ADDR="${MASTER_ADDR:-$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)}"
+NODELIST="${SLURM_JOB_NODELIST:-${SLURM_NODELIST:-}}"
+if [ -z "${MASTER_ADDR:-}" ]; then
+    if [ -n "$NODELIST" ]; then
+        export MASTER_ADDR="$(scontrol show hostnames "$NODELIST" | head -n 1)"
+    else
+        echo "ERROR: Could not determine node list (SLURM_JOB_NODELIST/SLURM_NODELIST missing)."
+        echo "Set MASTER_ADDR explicitly or launch via sbatch."
+        exit 1
+    fi
+else
+    export MASTER_ADDR
+fi
 export MASTER_PORT="${MASTER_PORT:-29500}"
 export WANDB_RUN="${WANDB_RUN:-speedrun_${SLURM_JOB_ID:-manual}}"
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-/kfs3/scratch/$USER/nanochat}"
