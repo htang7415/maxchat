@@ -10,10 +10,27 @@
 # 3) Example launch with wandb logging, but see below for setting up wandb first:
 # WANDB_RUN=speedrun screen -L -Logfile runs/speedrun.log -S speedrun bash runs/speedrun.sh
 
-# Default intermediate artifacts directory is in ~/.cache/nanochat
+# Default intermediate artifacts directory is in ~/.cache/nanochat.
+# Prefer scratch for large temporary caches when available.
 export OMP_NUM_THREADS=1
-export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
-mkdir -p $NANOCHAT_BASE_DIR
+if [ -z "${NANOCHAT_BASE_DIR:-}" ]; then
+    if [ -n "${SCRATCH:-}" ] && [ -w "${SCRATCH}" ]; then
+        NANOCHAT_BASE_DIR="${SCRATCH%/}/nanochat"
+    elif [ -w "/kfs3/scratch/$USER" ]; then
+        NANOCHAT_BASE_DIR="/kfs3/scratch/$USER/nanochat"
+    else
+        NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
+    fi
+fi
+export NANOCHAT_BASE_DIR
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$NANOCHAT_BASE_DIR/uv_cache}"
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$NANOCHAT_BASE_DIR/uv_python}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$NANOCHAT_BASE_DIR/xdg_cache}"
+if [ -z "${UV_PROJECT_ENVIRONMENT:-}" ]; then
+    UV_PROJECT_ENVIRONMENT="$(pwd)/.venv"
+fi
+export UV_PROJECT_ENVIRONMENT
+mkdir -p "$NANOCHAT_BASE_DIR" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$XDG_CACHE_HOME"
 
 # -----------------------------------------------------------------------------
 # Python venv setup with uv
@@ -21,11 +38,11 @@ mkdir -p $NANOCHAT_BASE_DIR
 # install uv (if not already installed)
 command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 # create a .venv local virtual environment (if it doesn't exist)
-[ -d ".venv" ] || uv venv
+[ -d "$UV_PROJECT_ENVIRONMENT" ] || uv venv "$UV_PROJECT_ENVIRONMENT"
 # install the repo dependencies
 uv sync --extra gpu
 # activate venv so that `python` uses the project's venv instead of system python
-source .venv/bin/activate
+source "$UV_PROJECT_ENVIRONMENT/bin/activate"
 
 # -----------------------------------------------------------------------------
 # wandb setup
