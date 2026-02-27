@@ -39,9 +39,18 @@ check_free_space_gb() {
 }
 
 check_cuda_gpus() {
-    require_cmd nvidia-smi
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        if [[ -z "${SLURM_JOB_ID:-}" ]] && [[ "${ALLOW_NO_NVIDIA_SMI:-0}" != "1" ]]; then
+            die "nvidia-smi not found and no active Slurm allocation detected. Run this on a GPU compute node (via salloc/sbatch) or set ALLOW_NO_NVIDIA_SMI=1 to bypass."
+        fi
+        log "nvidia-smi not found on PATH; skipping system GPU query and relying on PyTorch CUDA check."
+        return 0
+    fi
     local visible
     visible=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l | tr -d ' ')
+    if [[ -z "$visible" ]] || (( visible == 0 )); then
+        die "nvidia-smi is present but reports 0 GPUs. Run this on a GPU compute node."
+    fi
     if (( visible < NPROC_PER_NODE )); then
         die "Need at least NPROC_PER_NODE=${NPROC_PER_NODE} visible GPUs, found ${visible}. Run this on a GPU compute node."
     fi
@@ -55,7 +64,10 @@ import torch
 need = int(sys.argv[1])
 count = torch.cuda.device_count() if torch.cuda.is_available() else 0
 if count < need:
-    raise SystemExit(f"PyTorch CUDA check failed: need >= {need} GPUs, found {count}.")
+    raise SystemExit(
+        f"PyTorch CUDA check failed: need >= {need} GPUs, found {count}. "
+        "Are you on a CPU/login node? Request a GPU compute allocation first."
+    )
 print(f"[speedrun] PyTorch CUDA OK ({count} GPU(s) visible)")
 PY
 }
@@ -93,15 +105,44 @@ trap cleanup_background_jobs EXIT
 
 # Default intermediate artifacts directory is in ~/.cache/nanochat
 export OMP_NUM_THREADS=1
-export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"
-NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+if [[ -z "${NANOCHAT_BASE_DIR:-}" ]]; then
+    if [[ -n "${SCRATCH:-}" ]] && [[ -d "${SCRATCH}" ]]; then
+        export NANOCHAT_BASE_DIR="$SCRATCH/nanochat"
+    elif [[ -d "/kfs3/scratch/$USER" ]]; then
+        export NANOCHAT_BASE_DIR="/kfs3/scratch/$USER/nanochat"
+    else
+        export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
+    fi
+fi
+if [[ -z "${NPROC_PER_NODE:-}" ]]; then
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        detected_gpus=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l | tr -d ' ')
+        if [[ -n "${detected_gpus}" ]] && (( detected_gpus > 0 )); then
+            NPROC_PER_NODE="${detected_gpus}"
+        else
+            NPROC_PER_NODE=1
+        fi
+    else
+        NPROC_PER_NODE=1
+    fi
+fi
 BASE_MODEL_TAG="${BASE_MODEL_TAG:-d26}"
 NANOCHAT_MIN_FREE_GB="${NANOCHAT_MIN_FREE_GB:-80}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$NANOCHAT_BASE_DIR/uv_cache}"
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$NANOCHAT_BASE_DIR/uv_python}"
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$NANOCHAT_BASE_DIR/.venv}"
 
 [[ -f "pyproject.toml" ]] || die "Run this script from the repository root (missing pyproject.toml)"
 check_writable_dir "$NANOCHAT_BASE_DIR"
 check_free_space_gb "$NANOCHAT_BASE_DIR" "$NANOCHAT_MIN_FREE_GB"
+check_writable_dir "$UV_CACHE_DIR"
+check_writable_dir "$UV_PYTHON_INSTALL_DIR"
 check_cuda_gpus
+log "NANOCHAT_BASE_DIR=$NANOCHAT_BASE_DIR"
+log "NPROC_PER_NODE=$NPROC_PER_NODE"
+log "UV_CACHE_DIR=$UV_CACHE_DIR"
+log "UV_PYTHON_INSTALL_DIR=$UV_PYTHON_INSTALL_DIR"
+log "UV_PROJECT_ENVIRONMENT=$UV_PROJECT_ENVIRONMENT"
 
 # -----------------------------------------------------------------------------
 # Python venv setup with uv
@@ -112,11 +153,11 @@ if ! command -v uv >/dev/null 2>&1; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 # create a .venv local virtual environment (if it doesn't exist)
-[ -d ".venv" ] || uv venv
+[ -d "$UV_PROJECT_ENVIRONMENT" ] || uv venv "$UV_PROJECT_ENVIRONMENT"
 # install the repo dependencies
 uv sync --extra gpu
 # activate venv so that `python` uses the project's venv instead of system python
-source .venv/bin/activate
+source "$UV_PROJECT_ENVIRONMENT/bin/activate"
 check_pytorch_cuda
 
 # -----------------------------------------------------------------------------
