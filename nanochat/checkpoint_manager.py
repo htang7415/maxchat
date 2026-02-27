@@ -116,6 +116,11 @@ def build_model(checkpoint_dir, step, device, phase):
 
 
 def find_largest_model(checkpoints_dir):
+    if not os.path.isdir(checkpoints_dir):
+        raise FileNotFoundError(
+            f"Checkpoint directory not found: {checkpoints_dir}. "
+            "Make sure the previous stage finished and NANOCHAT_BASE_DIR points to the same location."
+        )
     # attempt to guess the model tag: take the biggest model available
     model_tags = [f for f in os.listdir(checkpoints_dir) if os.path.isdir(os.path.join(checkpoints_dir, f))]
     if not model_tags:
@@ -136,6 +141,11 @@ def find_largest_model(checkpoints_dir):
 
 
 def find_last_step(checkpoint_dir):
+    if not os.path.isdir(checkpoint_dir):
+        raise FileNotFoundError(
+            f"Checkpoint directory not found: {checkpoint_dir}. "
+            "Make sure --model-tag is correct and the stage produced checkpoints."
+        )
     # Look into checkpoint_dir and find model_<step>.pt with the highest step
     checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "model_*.pt"))
     if not checkpoint_files:
