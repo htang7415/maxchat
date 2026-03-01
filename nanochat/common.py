@@ -201,6 +201,28 @@ class DummyWandb:
     def finish(self):
         pass
 
+def init_wandb_or_dummy(wandb_module, project: str, run_name: str, config: dict, master_process: bool):
+    """Initialize wandb when possible; otherwise fall back to a no-op logger.
+
+    In non-interactive cluster jobs, wandb can fail with "api_key not configured (no-tty)".
+    Falling back avoids rank-0 crashes that can cascade into NCCL timeouts across ranks.
+    """
+    use_dummy_wandb = run_name == "dummy" or not master_process
+    if use_dummy_wandb:
+        return DummyWandb()
+
+    try:
+        return wandb_module.init(project=project, name=run_name, config=config)
+    except Exception as e:
+        err = str(e)
+        if "api_key not configured (no-tty)" in err or "call wandb.login" in err:
+            print0(
+                "WARNING: wandb is enabled but no API key is configured for this non-interactive job; "
+                "falling back to dummy logging. Set WANDB_API_KEY to enable wandb."
+            )
+            return DummyWandb()
+        raise
+
 # hardcoded BF16 peak flops for various GPUs
 # inspired by torchtitan: https://github.com/pytorch/torchtitan/blob/main/torchtitan/tools/utils.py
 # and PR: https://github.com/karpathy/nanochat/pull/147

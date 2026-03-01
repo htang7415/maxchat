@@ -65,7 +65,8 @@ else
     export MASTER_ADDR
 fi
 export MASTER_PORT="${MASTER_PORT:-29500}"
-export WANDB_RUN="${WANDB_RUN:-speedrun_${SLURM_JOB_ID:-manual}}"
+# Default to dummy so unattended Slurm jobs do not require interactive wandb login.
+export WANDB_RUN="${WANDB_RUN:-dummy}"
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-/kfs3/scratch/$USER/nanochat}"
 
 echo "Workdir: $WORKDIR"
