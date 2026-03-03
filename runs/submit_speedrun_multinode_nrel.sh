@@ -68,12 +68,19 @@ export MASTER_PORT="${MASTER_PORT:-29500}"
 # Default to dummy so unattended Slurm jobs do not require interactive wandb login.
 export WANDB_RUN="${WANDB_RUN:-dummy}"
 export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-/kfs3/scratch/$USER/nanochat}"
+export TMPDIR="${TMPDIR:-$NANOCHAT_BASE_DIR/tmp}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$NANOCHAT_BASE_DIR/torchinductor_cache}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$NANOCHAT_BASE_DIR/triton_cache}"
+mkdir -p "$NANOCHAT_BASE_DIR" "$TMPDIR" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 echo "Workdir: $WORKDIR"
 echo "DDP config: nnodes=${NNODES}, nproc_per_node=${NPROC_PER_NODE}, total_gpus=$((NNODES * NPROC_PER_NODE))"
 echo "MASTER_ADDR=${MASTER_ADDR}, MASTER_PORT=${MASTER_PORT}"
 echo "WANDB_RUN=${WANDB_RUN}"
 echo "NANOCHAT_BASE_DIR=${NANOCHAT_BASE_DIR}"
+echo "TMPDIR=${TMPDIR}"
+echo "TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR}"
+echo "TRITON_CACHE_DIR=${TRITON_CACHE_DIR}"
 
 # Launch one controller process per node.
 # runs/speedrun_multinode.sh will derive NODE_RANK from SLURM_NODEID and run torchrun.
@@ -81,5 +88,6 @@ srun \
   --ntasks="${NNODES}" \
   --ntasks-per-node=1 \
   --kill-on-bad-exit=1 \
+  --export="ALL,TMPDIR=${TMPDIR},TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR},TRITON_CACHE_DIR=${TRITON_CACHE_DIR},NANOCHAT_BASE_DIR=${NANOCHAT_BASE_DIR}" \
   --chdir="$WORKDIR" \
   bash runs/speedrun_multinode.sh

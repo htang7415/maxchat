@@ -26,11 +26,21 @@ export NANOCHAT_BASE_DIR
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$NANOCHAT_BASE_DIR/uv_cache}"
 export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$NANOCHAT_BASE_DIR/uv_python}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$NANOCHAT_BASE_DIR/xdg_cache}"
+export TMPDIR="${TMPDIR:-$NANOCHAT_BASE_DIR/tmp}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$NANOCHAT_BASE_DIR/torchinductor_cache}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$NANOCHAT_BASE_DIR/triton_cache}"
 if [ -z "${UV_PROJECT_ENVIRONMENT:-}" ]; then
     UV_PROJECT_ENVIRONMENT="$(pwd)/.venv"
 fi
 export UV_PROJECT_ENVIRONMENT
-mkdir -p "$NANOCHAT_BASE_DIR" "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR" "$XDG_CACHE_HOME"
+mkdir -p \
+    "$NANOCHAT_BASE_DIR" \
+    "$UV_CACHE_DIR" \
+    "$UV_PYTHON_INSTALL_DIR" \
+    "$XDG_CACHE_HOME" \
+    "$TMPDIR" \
+    "$TORCHINDUCTOR_CACHE_DIR" \
+    "$TRITON_CACHE_DIR"
 
 # -----------------------------------------------------------------------------
 # Python venv setup with uv
