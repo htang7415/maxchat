@@ -5,6 +5,8 @@ Common utilities for nanochat.
 import os
 import re
 import logging
+import ssl
+import urllib.error
 import urllib.request
 import torch
 import torch.distributed as dist
@@ -58,6 +60,39 @@ def get_base_dir():
     os.makedirs(nanochat_dir, exist_ok=True)
     return nanochat_dir
 
+def build_download_ssl_context():
+    """
+    Build an SSL context for HTTPS downloads.
+
+    Priority for CA bundle selection:
+    1) NANOCHAT_CA_BUNDLE
+    2) SSL_CERT_FILE
+    3) REQUESTS_CA_BUNDLE
+    4) certifi (if installed)
+    5) system default trust store
+    """
+    ca_source = "system trust store"
+    ca_bundle = None
+    for env_name in ("NANOCHAT_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        value = os.environ.get(env_name)
+        if not value:
+            continue
+        if not os.path.isfile(value):
+            raise FileNotFoundError(f"{env_name} is set but file does not exist: {value}")
+        ca_source = f"{env_name}={value}"
+        ca_bundle = value
+        break
+    if ca_bundle is None:
+        try:
+            import certifi
+            ca_bundle = certifi.where()
+            ca_source = f"certifi={ca_bundle}"
+        except Exception:
+            ca_bundle = None
+    if ca_bundle is not None:
+        return ssl.create_default_context(cafile=ca_bundle), ca_source
+    return ssl.create_default_context(), ca_source
+
 def download_file_with_lock(url, filename, postprocess_fn=None):
     """
     Downloads a file from a URL to a local path in the base directory.
@@ -79,9 +114,20 @@ def download_file_with_lock(url, filename, postprocess_fn=None):
             return file_path
 
         # Download the content as bytes
+        ssl_context, ca_source = build_download_ssl_context()
         print(f"Downloading {url}...")
-        with urllib.request.urlopen(url) as response:
-            content = response.read() # bytes
+        print(f"TLS CA source: {ca_source}")
+        try:
+            with urllib.request.urlopen(url, context=ssl_context) as response:
+                content = response.read() # bytes
+        except urllib.error.URLError as err:
+            if isinstance(err.reason, ssl.SSLCertVerificationError):
+                raise RuntimeError(
+                    f"TLS certificate verification failed for {url}. "
+                    "Set NANOCHAT_CA_BUNDLE to a PEM bundle trusted on this cluster, "
+                    "or pre-stage the required files in NANOCHAT_BASE_DIR."
+                ) from err
+            raise
 
         # Write to local file
         with open(file_path, 'wb') as f:

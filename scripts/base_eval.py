@@ -111,15 +111,27 @@ def evaluate_core(model, tokenizer, device, max_per_task=-1):
     Evaluate a base model on the CORE benchmark.
     Returns dict with results, centered_results, and core_metric.
     """
-    base_dir = get_base_dir()
-    eval_bundle_dir = os.path.join(base_dir, "eval_bundle")
-    # Download the eval bundle if needed
-    if not os.path.exists(eval_bundle_dir):
-        download_file_with_lock(EVAL_BUNDLE_URL, "eval_bundle.zip", postprocess_fn=place_eval_bundle)
+    override_eval_bundle_dir = os.environ.get("NANOCHAT_EVAL_BUNDLE_DIR")
+    if override_eval_bundle_dir:
+        eval_bundle_dir = os.path.abspath(override_eval_bundle_dir)
+        if not os.path.isdir(eval_bundle_dir):
+            raise FileNotFoundError(
+                f"NANOCHAT_EVAL_BUNDLE_DIR is set but directory does not exist: {eval_bundle_dir}"
+            )
+        print0(f"Using eval bundle from NANOCHAT_EVAL_BUNDLE_DIR={eval_bundle_dir}")
+    else:
+        base_dir = get_base_dir()
+        eval_bundle_dir = os.path.join(base_dir, "eval_bundle")
+        # Download the eval bundle if needed
+        if not os.path.exists(eval_bundle_dir):
+            download_file_with_lock(EVAL_BUNDLE_URL, "eval_bundle.zip", postprocess_fn=place_eval_bundle)
 
     config_path = os.path.join(eval_bundle_dir, "core.yaml")
     data_base_path = os.path.join(eval_bundle_dir, "eval_data")
     eval_meta_data = os.path.join(eval_bundle_dir, "eval_meta_data.csv")
+    for required_path in (config_path, data_base_path, eval_meta_data):
+        if not os.path.exists(required_path):
+            raise FileNotFoundError(f"Missing CORE eval asset: {required_path}")
 
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
